@@ -9,16 +9,16 @@ jobs:
   keepalive:
     runs-on: ubuntu-latest
 
-    # ✔ Usa la imagen oficial de Playwright con browsers ya instalados
+    # Usa la imagen oficial con navegadores ya instalados
     container:
       image: mcr.microsoft.com/playwright/python:v1.45.0-jammy
 
     steps:
-      # (Opcional) mostrar versiones para debug
-      - name: Check Python & Playwright versions
+      # Instala el paquete de Python (los browsers ya están en la imagen)
+      - name: Install Playwright (Python)
         run: |
-          python -V
-          python -c "import playwright, sys; print('playwright', playwright.__version__)"
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir playwright==1.45.0
 
       - name: Visit Streamlit apps
         env:

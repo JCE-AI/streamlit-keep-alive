@@ -2,22 +2,26 @@ name: Keep Streamlit Apps Alive
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # cada 5 minutos
-  workflow_dispatch:
+    - cron: "*/5 * * * *"   # ejecuta cada 5 minutos
+  workflow_dispatch:        # permite lanzarlo manualmente
 
 jobs:
   keepalive:
     runs-on: ubuntu-latest
+
+    # Usa la imagen oficial de Playwright con los navegadores ya instalados
     container:
       image: mcr.microsoft.com/playwright/python:v1.45.0-jammy
 
     steps:
+      # Instala el paquete de Python (los browsers ya vienen en la imagen)
       - name: Install Playwright (Python)
         run: |
           python -m pip install --upgrade pip
           python -m pip install --no-cache-dir playwright==1.45.0
 
-      - name: Visit Streamlit apps (wake if sleeping)
+      # Visita tus apps: si está dormida, la despierta; espera a que cargue y la mantiene abierta un rato
+      - name: Visit Streamlit apps (wake, wait until ready, keep open)
         env:
           APP_URLS: |
             https://optibat-metrics-dashboard-flags.streamlit.app/
@@ -36,43 +40,50 @@ jobs:
                   return False
 
           def try_wake(page):
-              # 1) estrategias por rol/nombre (varios idiomas/variantes)
+              # 1) patrones por rol/nombre (varias variantes/idiomas)
               patterns = [
                   r"get this app back up",
                   r"wake.*back up",
                   r"wake.*up",
-                  r"volver.*activar",       # ES
-                  r"despert",               # ES: despertar/despertalo
-                  r"reanudar|reabrir",      # ES
+                  r"volver.*activar",
+                  r"despert",
+                  r"reanudar|reabrir",
               ]
               for pat in patterns:
                   loc = page.get_by_role("button", name=re.compile(pat, re.I))
-                  if loc.count() > 0:
-                      btn = loc.first
-                      if btn.is_visible():
-                          btn.click()
-                          return True
-
-              # 2) selectores de texto genéricos
-              candidates = [
+                  if loc.count() > 0 and loc.first.is_visible():
+                      loc.first.click()
+                      return True
+              # 2) selectores genéricos por texto
+              for sel in [
                   "button:has-text('get this app back up')",
                   "text=/get this app back up/i",
                   "text=/wake.*back up/i",
-              ]
-              for sel in candidates:
+              ]:
                   loc = page.locator(sel)
                   if loc.count() > 0 and loc.first.is_visible():
                       loc.first.click()
                       return True
-
-              # 3) último recurso: si NO está despierta y hay un único botón visible, clicarlo
+              # 3) último recurso: si no está despierta y hay un único botón visible, clicarlo
               if not is_awake(page):
                   btns = page.locator("button:visible")
-                  count = btns.count()
-                  if count == 1:
+                  if btns.count() == 1:
                       btns.first.click()
                       return True
+              return False
 
+          def wait_until_ready(page, total_ms=300000):
+              # espera hasta 5 min a que aparezca la app real
+              deadline = time.time() + total_ms/1000
+              while time.time() < deadline:
+                  if is_awake(page):
+                      return True
+                  page.wait_for_timeout(2000)
+                  # a veces hay 404/Not found transitorio; recarga
+                  try:
+                      page.reload(wait_until="domcontentloaded", timeout=60000)
+                  except Exception:
+                      pass
               return False
 
           with sync_playwright() as p:
@@ -83,24 +94,24 @@ jobs:
                   try:
                       print(f"Visitando: {url}")
                       page.goto(url, wait_until="domcontentloaded", timeout=180000)
-                      page.wait_for_timeout(3000)  # deja renderizar
+                      page.wait_for_timeout(1500)
 
                       awake_before = is_awake(page)
                       woke = False
                       if not awake_before:
-                          # intentar 2 veces por si la pantalla de sleep tarda en aparecer
-                          for _ in range(2):
+                          for _ in range(3):
                               if try_wake(page):
                                   woke = True
                                   break
                               page.wait_for_timeout(1500)
 
-                      # esperar a que cargue la app si despertamos
-                      if woke or not awake_before:
-                          page.wait_for_load_state("load", timeout=240000)
-                          page.wait_for_load_state("networkidle", timeout=240000)
+                      ready = wait_until_ready(page, total_ms=300000)
 
-                      print(f"✔ OK: awake_before={awake_before}, woke={woke}, title='{page.title()}'")
+                      # Mantener la sesión abierta un rato para dejarla "caliente"
+                      if ready:
+                          page.wait_for_timeout(90000)  # 90 s
+
+                      print(f"✔ OK: awake_before={awake_before}, woke={woke}, ready={ready}, title='{page.title()}'")
                   except Exception as e:
                       print(f"ERROR visitando {url}: {e}")
                   finally:

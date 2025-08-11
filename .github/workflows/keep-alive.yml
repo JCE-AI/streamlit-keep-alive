@@ -14,11 +14,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install Playwright (Python)
-        run: pip install playwright
-
-      # Instala Chromium y dependencias (acción oficial)
-      - name: Install Playwright browsers
-        uses: microsoft/playwright-github-action@v1
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
 
       - name: Visit Streamlit apps
         env:
@@ -52,7 +50,6 @@ jobs:
               for url in urls:
                   ctx = browser.new_context()
                   page = ctx.new_page()
-                  # pequeño retry por si hay latencia
                   for i in range(2):
                       try:
                           visit(page, url); break
@@ -62,4 +59,3 @@ jobs:
                   ctx.close()
               browser.close()
           PY
-

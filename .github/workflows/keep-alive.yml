@@ -8,56 +8,102 @@ on:
 jobs:
   keepalive:
     runs-on: ubuntu-latest
-
-    # Usa la imagen oficial con navegadores ya instalados
     container:
       image: mcr.microsoft.com/playwright/python:v1.45.0-jammy
 
     steps:
-      # Instala el paquete de Python (los browsers ya están en la imagen)
       - name: Install Playwright (Python)
         run: |
           python -m pip install --upgrade pip
           python -m pip install --no-cache-dir playwright==1.45.0
 
-      - name: Visit Streamlit apps
+      - name: Visit Streamlit apps (wake if sleeping)
         env:
           APP_URLS: |
             https://optibat-metrics-dashboard-flags.streamlit.app/
             https://optimitive-eda-analyzer.streamlit.app/
         run: |
           python - <<'PY'
-          import os, time
+          import os, re, time
           from playwright.sync_api import sync_playwright
 
           urls = [u.strip() for u in os.environ["APP_URLS"].splitlines() if u.strip()]
 
-          def visit(page, url):
-              print(f"Visitando: {url}")
-              page.goto(url, wait_until="domcontentloaded", timeout=180000)
-              html = page.content()
-              if "wake it back up" in html or "Zzzz" in html:
-                  print("→ App dormida: despertando…")
-                  try:
-                      page.get_by_role("button", name="Yes, get this app back up!").click()
-                  except:
-                      page.click("text=back up")
-                  page.wait_for_load_state("networkidle", timeout=240000)
-              else:
-                  page.wait_for_load_state("networkidle", timeout=180000)
-              print(f"✔ OK: {url}")
+          def is_awake(page):
+              try:
+                  return page.locator("[data-testid='stAppViewContainer']").count() > 0
+              except:
+                  return False
+
+          def try_wake(page):
+              # 1) estrategias por rol/nombre (varios idiomas/variantes)
+              patterns = [
+                  r"get this app back up",
+                  r"wake.*back up",
+                  r"wake.*up",
+                  r"volver.*activar",       # ES
+                  r"despert",               # ES: despertar/despertalo
+                  r"reanudar|reabrir",      # ES
+              ]
+              for pat in patterns:
+                  loc = page.get_by_role("button", name=re.compile(pat, re.I))
+                  if loc.count() > 0:
+                      btn = loc.first
+                      if btn.is_visible():
+                          btn.click()
+                          return True
+
+              # 2) selectores de texto genéricos
+              candidates = [
+                  "button:has-text('get this app back up')",
+                  "text=/get this app back up/i",
+                  "text=/wake.*back up/i",
+              ]
+              for sel in candidates:
+                  loc = page.locator(sel)
+                  if loc.count() > 0 and loc.first.is_visible():
+                      loc.first.click()
+                      return True
+
+              # 3) último recurso: si NO está despierta y hay un único botón visible, clicarlo
+              if not is_awake(page):
+                  btns = page.locator("button:visible")
+                  count = btns.count()
+                  if count == 1:
+                      btns.first.click()
+                      return True
+
+              return False
 
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
               for url in urls:
                   ctx = browser.new_context()
                   page = ctx.new_page()
-                  for i in range(2):
-                      try:
-                          visit(page, url); break
-                      except Exception as e:
-                          print(f"Intento {i+1} falló: {e}")
-                          time.sleep(12)
-                  ctx.close()
+                  try:
+                      print(f"Visitando: {url}")
+                      page.goto(url, wait_until="domcontentloaded", timeout=180000)
+                      page.wait_for_timeout(3000)  # deja renderizar
+
+                      awake_before = is_awake(page)
+                      woke = False
+                      if not awake_before:
+                          # intentar 2 veces por si la pantalla de sleep tarda en aparecer
+                          for _ in range(2):
+                              if try_wake(page):
+                                  woke = True
+                                  break
+                              page.wait_for_timeout(1500)
+
+                      # esperar a que cargue la app si despertamos
+                      if woke or not awake_before:
+                          page.wait_for_load_state("load", timeout=240000)
+                          page.wait_for_load_state("networkidle", timeout=240000)
+
+                      print(f"✔ OK: awake_before={awake_before}, woke={woke}, title='{page.title()}'")
+                  except Exception as e:
+                      print(f"ERROR visitando {url}: {e}")
+                  finally:
+                      ctx.close()
               browser.close()
           PY

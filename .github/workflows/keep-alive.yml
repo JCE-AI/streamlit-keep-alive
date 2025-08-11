@@ -2,7 +2,7 @@ name: Keep Streamlit Apps Alive
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # cada 5 minutos
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -13,38 +13,15 @@ jobs:
         with:
           python-version: "3.11"
 
-      # 1) Dependencias de sistema que necesita Chromium en Ubuntu
-      - name: Install system dependencies for Playwright
+      - name: Install Playwright (Python) + system deps + Chromium
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libnss3 \
-            libnspr4 \
-            libatk1.0-0 \
-            libatk-bridge2.0-0 \
-            libcups2 \
-            libdrm2 \
-            libxkbcommon0 \
-            libxcomposite1 \
-            libxdamage1 \
-            libxfixes3 \
-            libxrandr2 \
-            libgbm1 \
-            libpango-1.0-0 \
-            libasound2 \
-            libatspi2.0-0 \
-            libwayland-client0 \
-            libwayland-egl1 \
-            libwayland-server0 \
-            libx11-xcb1
-
-      # 2) Instalar Playwright y el navegador Chromium
-      - name: Install Playwright (Python) + Chromium
-        run: |
+          pip install --upgrade pip
           pip install playwright
+          # instala dependencias del SO adecuadas para esta distro
+          sudo python -m playwright install-deps chromium
+          # instala el navegador
           python -m playwright install chromium
 
-      # 3) Visitar tus apps y despertarlas si hace falta
       - name: Visit Streamlit apps
         env:
           APP_URLS: |
@@ -59,7 +36,7 @@ jobs:
 
           def visit(page, url):
               print(f"Visitando: {url}")
-              page.goto(url, wait_until="domcontentloaded", timeout=120000)
+              page.goto(url, wait_until="domcontentloaded", timeout=180000)
               html = page.content()
               if "wake it back up" in html or "Zzzz" in html:
                   print("→ App dormida: despertando…")
@@ -67,9 +44,9 @@ jobs:
                       page.get_by_role("button", name="Yes, get this app back up!").click()
                   except:
                       page.click("text=back up")
-                  page.wait_for_load_state("networkidle", timeout=180000)
+                  page.wait_for_load_state("networkidle", timeout=240000)
               else:
-                  page.wait_for_load_state("networkidle", timeout=120000)
+                  page.wait_for_load_state("networkidle", timeout=180000)
               print(f"✔ OK: {url}")
 
           with sync_playwright() as p:
@@ -82,7 +59,7 @@ jobs:
                           visit(page, url); break
                       except Exception as e:
                           print(f"Intento {i+1} falló: {e}")
-                          time.sleep(10)
+                          time.sleep(12)
                   ctx.close()
               browser.close()
           PY

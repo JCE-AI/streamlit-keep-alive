@@ -1,0 +1,65 @@
+name: Keep Streamlit Apps Alive
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # cada 5 minutos
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright (Python)
+        run: pip install playwright
+
+      # Instala Chromium y dependencias (acción oficial)
+      - name: Install Playwright browsers
+        uses: microsoft/playwright-github-action@v1
+
+      - name: Visit Streamlit apps
+        env:
+          APP_URLS: |
+            https://optibat-metrics-dashboard-flags.streamlit.app/
+            https://optimitive-eda-analyzer.streamlit.app/
+        run: |
+          python - <<'PY'
+          import os, time
+          from playwright.sync_api import sync_playwright
+
+          urls = [u.strip() for u in os.environ["APP_URLS"].splitlines() if u.strip()]
+
+          def visit(page, url):
+              print(f"Visitando: {url}")
+              page.goto(url, wait_until="domcontentloaded", timeout=120000)
+              html = page.content()
+              if "wake it back up" in html or "Zzzz" in html:
+                  print("→ App dormida: despertando…")
+                  try:
+                      page.get_by_role("button", name="Yes, get this app back up!").click()
+                  except:
+                      page.click("text=back up")
+                  page.wait_for_load_state("networkidle", timeout=180000)
+              else:
+                  page.wait_for_load_state("networkidle", timeout=120000)
+              print(f"✔ OK: {url}")
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              for url in urls:
+                  ctx = browser.new_context()
+                  page = ctx.new_page()
+                  # pequeño retry por si hay latencia
+                  for i in range(2):
+                      try:
+                          visit(page, url); break
+                      except Exception as e:
+                          print(f"Intento {i+1} falló: {e}")
+                          time.sleep(10)
+                  ctx.close()
+              browser.close()
+          PY
+

@@ -3,7 +3,7 @@ name: Keep Streamlit Apps Alive
 on:
   schedule:
     - cron: "*/5 * * * *"     # 00,05,10,15,...
-    - cron: "2-59/5 * * * *"  # 02,07,12,17,...
+    - cron: "2-59/5 * * * *"  # 02,07,12,17,... (desfase ~2 min)
   workflow_dispatch:
 
 jobs:
@@ -11,10 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 7
 
+    # ✅ Concurrency por URL y tipo de evento (nombre nuevo v2 para evitar colas viejas)
     concurrency:
-      group: keepalive-streamlit
+      group: keepalive-v2-${{ matrix.app_url }}-${{ github.event_name }}
       cancel-in-progress: true
 
+    # ✅ Ejecuta cada URL en paralelo
     strategy:
       fail-fast: false
       matrix:
@@ -22,10 +24,12 @@ jobs:
           - https://optibat-metrics-dashboard-flags.streamlit.app/
           - https://optimitive-eda-analyzer.streamlit.app/
 
+    # Imagen oficial Playwright con navegadores ya instalados
     container:
       image: mcr.microsoft.com/playwright/python:v1.45.0-jammy
 
     steps:
+      # Por si la imagen cambiara, aseguramos el paquete
       - name: Install Playwright (Python)
         run: |
           python -m pip install --upgrade pip
@@ -34,10 +38,10 @@ jobs:
       - name: Visit ${{ matrix.app_url }} (wake 90s + warm dinámico hasta -30s)
         env:
           APP_URL: ${{ matrix.app_url }}
-          INTERVAL_SEC: "300"
-          GAP_SEC: "30"
-          GOTO_MS: "60000"
-          READY_MS: "90000"
+          INTERVAL_SEC: "300"   # periodo nominal (5 min)
+          GAP_SEC: "30"         # detener calentamiento 30 s antes del próximo ciclo
+          GOTO_MS: "60000"      # 60 s máx para abrir
+          READY_MS: "90000"     # 90 s máx para “despertar”
         run: |
           python - <<'PY'
           import os, re, time, random
@@ -58,35 +62,25 @@ jobs:
                   return False
 
           def try_wake(page):
-              # 1) por rol con regex (inglés y variantes)
+              # 1) por rol con regex (EN/ES)
               for pat in [
-                  r"get this app back up",
-                  r"wake.*back up",
-                  r"wake.*up",
-                  r"volver.*activar",
-                  r"despert",
-                  r"reanudar|reabrir",
+                  r"get this app back up", r"wake.*back up", r"wake.*up",
+                  r"volver.*activar", r"despert", r"reanudar|reabrir",
               ]:
                   loc = page.get_by_role("button", name=re.compile(pat, re.I))
                   if loc.count() > 0 and loc.first.is_visible():
                       loc.first.click(); return True
-
-              # 2) por texto exacto / parcial (sin comas)
-              text_selectors = [
-                  "button:has-text('Yes, get this app back up!')",
-                  "button:has-text('get this app back up')",
-              ]
-              for sel in text_selectors:
+              # 2) por texto (sin coma entre selectores)
+              for sel in ["button:has-text('Yes, get this app back up!')",
+                          "button:has-text('get this app back up')"]:
                   loc = page.locator(sel)
                   if loc.count() > 0 and loc.first.is_visible():
                       loc.first.click(); return True
-
-              # 3) por texto genérico
+              # 3) texto genérico
               for rex in [r"get this app back up", r"wake.*back up"]:
                   loc = page.get_by_text(re.compile(rex, re.I))
                   if loc.count() > 0 and loc.first.is_visible():
                       loc.first.click(); return True
-
               # 4) último recurso: único botón visible
               btns = page.locator("button:visible")
               if btns.count() == 1:
@@ -101,15 +95,16 @@ jobs:
                   print(f"Visitando: {url}")
                   page.goto(url, wait_until="domcontentloaded", timeout=GOTO_MS)
 
+                  # Si está dormida, intentar despertarla
                   if not is_awake(page):
                       try_wake(page)
 
-                  # esperar hasta READY_MS a que aparezca el contenedor real de Streamlit
+                  # Esperar hasta READY_MS a que aparezca el contenedor real de Streamlit
                   deadline = time.time() + READY_MS/1000
                   while not is_awake(page) and time.time() < deadline:
                       page.wait_for_timeout(1500)
 
-                  # reload de rescate
+                  # Reload de rescate
                   if not is_awake(page):
                       try:
                           page.reload(wait_until="domcontentloaded", timeout=30000)
@@ -119,7 +114,7 @@ jobs:
                       while not is_awake(page) and time.time() < rescue_deadline:
                           page.wait_for_timeout(1000)
 
-                  # calentar hasta ~30 s antes del próximo ciclo (con jitter 5–10 s)
+                  # Calentar hasta ~30 s antes del próximo ciclo (con jitter 5–10 s)
                   elapsed   = time.time() - t0
                   jitter    = random.randint(5, 10)
                   warm_sec  = max(0, INTERVAL - GAP - jitter - elapsed)

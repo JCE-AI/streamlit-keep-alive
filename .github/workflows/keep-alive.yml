@@ -11,12 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 7
 
-    # Evita solapes entre ciclos
+    # evita solapes entre ciclos
     concurrency:
       group: keepalive-streamlit
       cancel-in-progress: true
 
-    # Ejecuta cada URL en paralelo
+    # ejecuta cada URL en paralelo
     strategy:
       fail-fast: false
       matrix:
@@ -24,18 +24,24 @@ jobs:
           - https://optibat-metrics-dashboard-flags.streamlit.app/
           - https://optimitive-eda-analyzer.streamlit.app/
 
-    # Imagen oficial Playwright con navegadores listos
+    # imagen con Playwright + navegadores ya instalados
     container:
       image: mcr.microsoft.com/playwright/python:v1.45.0-jammy
 
     steps:
+      # (opcional, por seguridad – suele venir ya instalado en la imagen)
+      - name: Install Playwright (Python)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir playwright==1.45.0
+
       - name: Visit ${{ matrix.app_url }} (wake 90s + warm dinámico hasta -30s)
         env:
           APP_URL: ${{ matrix.app_url }}
-          INTERVAL_SEC: "300"   # periodo nominal entre ejecuciones (5 min)
-          GAP_SEC: "30"         # dejamos de calentar 30 s antes del próximo ciclo
-          GOTO_MS: "60000"      # 60 s para abrir
-          READY_MS: "90000"     # 90 s máximo para “despertar”
+          INTERVAL_SEC: "300"   # periodo nominal (5 min)
+          GAP_SEC: "30"         # dejar de calentar 30 s antes del próximo ciclo
+          GOTO_MS: "60000"      # 60 s máx para abrir
+          READY_MS: "90000"     # 90 s máx para “despertar”
         run: |
           python - <<'PY'
           import os, re, time, random
@@ -68,7 +74,7 @@ jobs:
               loc = page.locator("button:has-text('get this app back up'), text=/wake.*back up/i")
               if loc.count() > 0 and loc.first.is_visible():
                   loc.first.click(); return True
-              # Último recurso: si hay un único botón visible, clicarlo
+              # último recurso: si hay un único botón visible, clicarlo
               btns = page.locator("button:visible")
               if btns.count() == 1:
                   btns.first.click(); return True
@@ -82,15 +88,16 @@ jobs:
                   print(f"Visitando: {url}")
                   page.goto(url, wait_until="domcontentloaded", timeout=GOTO_MS)
 
-                  # Si está dormida, intentar despertarla
+                  # intentar despertar si está dormida
                   if not is_awake(page):
                       try_wake(page)
 
-                  # Espera hasta READY_MS a que aparezca el container real de Streamlit
+                  # esperar hasta READY_MS a que aparezca el contenedor real de Streamlit
                   deadline = time.time() + READY_MS/1000
                   while not is_awake(page) and time.time() < deadline:
                       page.wait_for_timeout(1500)
-                  # Un reload de rescate si aún no aparece
+
+                  # reload de rescate si aún no aparece
                   if not is_awake(page):
                       try:
                           page.reload(wait_until="domcontentloaded", timeout=30000)
@@ -100,7 +107,7 @@ jobs:
                       while not is_awake(page) and time.time() < rescue_deadline:
                           page.wait_for_timeout(1000)
 
-                  # Calienta hasta 30 s antes del siguiente ciclo, con jitter 5–10 s
+                  # calentar hasta ~30 s antes del próximo ciclo (con jitter 5–10 s)
                   elapsed   = time.time() - t0
                   jitter    = random.randint(5, 10)
                   warm_sec  = max(0, INTERVAL - GAP - jitter - elapsed)
